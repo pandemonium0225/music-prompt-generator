@@ -264,6 +264,16 @@ API 資訊
 
 ---
 
+## 開發路線圖
+
+查看 [ROADMAP.md](./ROADMAP.md) 了解未來優化方向：
+
+- **v1.x** - 情緒偵測、擴充標籤詞彙庫
+- **v2.x** - CLAP 模型整合、深度音樂資訊檢索
+- **v3.x** - MusicGen 音訊條件生成、Demucs 音軌分離
+
+---
+
 ## 授權
 
 MIT License
