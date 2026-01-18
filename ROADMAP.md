@@ -37,25 +37,26 @@
 
 ## 🚀 中期目標 (v2.x) - CLAP 整合
 
-### 2.1 CLAP 模型整合 (Contrastive Language-Audio Pretraining)
+### 2.1 CLAP 模型整合 (Contrastive Language-Audio Pretraining) ✅ 已完成
 
 > CLAP 是目前最先進的「音訊-文字」跨模態模型，能直接從音訊生成高品質描述。
 
-- [ ] **整合 LAION CLAP 或 Microsoft CLAP**
-  - HuggingFace: `laion/clap-htsat-unfused`
-  - 直接從音訊生成自然語言描述
-  - 輸出範例: "A melancholic jazz piano with rain background"
+- [x] **整合 LAION CLAP** ✅
+  - 使用 `laion/larger_clap_music` (音樂專用模型)
+  - Zero-shot 分類：從預定義標籤庫匹配最佳風格
+  - 實作於 `backend/clap_analyzer.py`
 
-- [ ] **混合分析模式**
+- [x] **混合分析模式** ✅
   ```
   最終 Prompt = CLAP 描述 (語義) + Librosa 分析 (數據)
   ```
-  - CLAP 提供高階風格描述
+  - CLAP 提供高階風格描述 (genre, mood, instruments, vocals...)
   - Librosa 提供精確數值 (BPM, Key)
+  - 透過環境變數 `CLAP_ENABLED` 可開關
 
-- [ ] **技術實作**
+- [x] **技術實作** ✅
   ```python
-  # 預計新增 clap_analyzer.py
+  # backend/clap_analyzer.py
   from transformers import ClapModel, ClapProcessor
 
   class CLAPAnalyzer:
