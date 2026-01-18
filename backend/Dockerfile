@@ -25,7 +25,7 @@ COPY pyproject.toml ./
 
 # 安裝依賴到 .venv (不安裝專案本身)
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --no-install-project --no-dev
+    uv sync --no-install-project --no-dev
 
 # -----------------------------------------------------------------------------
 # Stage 2: Runtime - 最終運行環境
