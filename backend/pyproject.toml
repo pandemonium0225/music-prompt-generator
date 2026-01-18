@@ -1,7 +1,7 @@
 [project]
 name = "music-prompt-generator"
-version = "1.0.0"
-description = "音訊分析工具，生成 SUNO AI 風格提示詞"
+version = "2.0.0"
+description = "音訊分析工具，生成 SUNO AI 風格提示詞 (支援 CLAP)"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.109.0",
@@ -11,6 +11,9 @@ dependencies = [
     "numpy>=1.26.0",
     "scipy>=1.11.0",
     "gunicorn>=21.0.0",
+    # CLAP dependencies
+    "transformers>=4.36.0",
+    "torch>=2.0.0",
 ]
 
 [dependency-groups]

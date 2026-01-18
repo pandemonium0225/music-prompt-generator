@@ -1,13 +1,14 @@
 # =============================================================================
-# Music Prompt Generator - Docker Compose
+# Music Prompt Generator - Docker Compose (v2.0 with CLAP)
 # =============================================================================
 # 本地 Docker 測試環境
 # 使用方式: docker compose up --build
+# 注意: CLAP 模型需要較多記憶體 (建議 4GB+)
 # =============================================================================
 
 services:
   # ---------------------------------------------------------------------------
-  # Backend API Service
+  # Backend API Service (with CLAP)
   # ---------------------------------------------------------------------------
   backend:
     build:
@@ -21,12 +22,16 @@ services:
       - ENVIRONMENT=development
       - LOG_LEVEL=INFO
       - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
+      # CLAP 設定
+      - CLAP_ENABLED=true
+      - CLAP_MODEL=laion/larger_clap_music
+      - CLAP_TOP_K=8
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 10s
+      start_period: 60s  # 增加等待時間 (CLAP 模型首次載入較慢)
     restart: unless-stopped
 
   # ---------------------------------------------------------------------------

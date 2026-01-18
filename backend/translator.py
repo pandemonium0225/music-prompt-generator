@@ -1,9 +1,18 @@
+from typing import Optional
+
+
 class SunoTranslator:
     """
     將音訊分析結果轉換為 SUNO 風格的 Prompt
+
+    支援兩種分析來源:
+    - Librosa: 數值特徵 (BPM, Energy, Key...)
+    - CLAP: 語義標籤 (AI 生成的風格描述)
     """
 
-    def generate_prompt(self, features: dict) -> dict:
+    def generate_prompt(
+        self, features: dict, clap_tags: Optional[list] = None
+    ) -> dict:
         bpm = features['bpm']
         energy = features['energy']
         brightness = features['brightness']
@@ -89,11 +98,27 @@ class SunoTranslator:
             style_tags.append("compressed")
             mood_tags.append("consistent")
 
-        # 去除重複並組合
-        all_tags = list(dict.fromkeys(style_tags + mood_tags + instrument_tags + tags))
+        # 去除重複並組合 Librosa 標籤
+        librosa_tags = list(dict.fromkeys(style_tags + mood_tags + instrument_tags + tags))
 
-        # 限制 tag 數量，保持 prompt 精簡
-        selected_tags = all_tags[:8]
+        # 整合 CLAP 標籤 (如果有)
+        if clap_tags:
+            # CLAP 標籤優先，因為是 AI 語義分析結果
+            # 避免重複: 先加入 CLAP 標籤，再補充 Librosa 標籤
+            combined_tags = list(clap_tags)  # CLAP tags first
+            clap_lower = {t.lower() for t in clap_tags}
+
+            for tag in librosa_tags:
+                if tag.lower() not in clap_lower:
+                    combined_tags.append(tag)
+
+            # 限制 tag 數量，保持 prompt 精簡 (CLAP 提供更多有意義的標籤)
+            selected_tags = combined_tags[:10]
+            analysis_source = "clap+librosa"
+        else:
+            # 僅使用 Librosa 分析
+            selected_tags = librosa_tags[:8]
+            analysis_source = "librosa"
 
         # 組合最終 Prompt
         prompt_string = f"{', '.join(selected_tags)}, {key} {mode}, {bpm} bpm"
@@ -103,5 +128,6 @@ class SunoTranslator:
             "tags": selected_tags,
             "key": f"{key} {mode}",
             "bpm": bpm,
-            "features": features
+            "features": features,
+            "analysis_source": analysis_source
         }

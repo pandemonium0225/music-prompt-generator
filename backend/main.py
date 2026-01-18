@@ -10,6 +10,7 @@ PORT = int(os.getenv("PORT", 8000))
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+CLAP_ENABLED = os.getenv("CLAP_ENABLED", "true").lower() == "true"
 
 # 配置 logging
 logging.basicConfig(
@@ -23,8 +24,9 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """應用程式生命週期管理"""
     # 啟動時
-    logger.info(f"Starting Music Prompt Generator API in {ENVIRONMENT} mode")
+    logger.info(f"Starting Music Prompt Generator API v2.0 in {ENVIRONMENT} mode")
     logger.info(f"CORS allowed origins: {ALLOWED_ORIGINS}")
+    logger.info(f"CLAP enabled: {CLAP_ENABLED}")
 
     # 延遲載入重量級模組 (librosa 載入較慢)
     from analyzer import AudioAnalyzer
@@ -32,6 +34,18 @@ async def lifespan(app: FastAPI):
 
     app.state.analyzer = AudioAnalyzer()
     app.state.translator = SunoTranslator()
+
+    # 載入 CLAP 分析器 (如果啟用)
+    app.state.clap_analyzer = None
+    if CLAP_ENABLED:
+        try:
+            from clap_analyzer import get_clap_analyzer
+            app.state.clap_analyzer = get_clap_analyzer()
+            if app.state.clap_analyzer:
+                logger.info("CLAP analyzer initialized (model will load on first use)")
+        except Exception as e:
+            logger.warning(f"Failed to initialize CLAP analyzer: {e}")
+            logger.warning("Falling back to Librosa-only analysis")
 
     yield
 
@@ -41,8 +55,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Music Prompt Generator API",
-    description="分析音訊檔案並生成 SUNO 風格的 Prompt",
-    version="1.0.0",
+    description="分析音訊檔案並生成 SUNO 風格的 Prompt (支援 CLAP)",
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -60,8 +74,9 @@ app.add_middleware(
 async def root():
     return {
         "message": "Music Prompt Generator API",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "environment": ENVIRONMENT,
+        "clap_enabled": CLAP_ENABLED,
         "docs": "/docs",
         "endpoints": {
             "analyze": "POST /api/analyze - 上傳音訊檔案進行分析",
@@ -77,6 +92,10 @@ async def analyze_song(file: UploadFile = File(...)):
 
     支援格式: MP3, WAV, FLAC, OGG
     建議檔案大小: < 10MB
+
+    分析方式:
+    - Librosa: 提取 BPM, Key, Energy 等數值特徵
+    - CLAP (可選): 使用 AI 模型進行語義風格分析
     """
     # 驗證檔案類型
     allowed_extensions = {'.mp3', '.wav', '.flac', '.ogg'}
@@ -111,7 +130,7 @@ async def analyze_song(file: UploadFile = File(...)):
 
         logger.info(f"Analyzing file: {file.filename} ({len(content)} bytes)")
 
-        # 分析音訊
+        # 1. Librosa 分析 (數值特徵)
         raw_features = app.state.analyzer.analyze(temp_path)
 
         if not raw_features:
@@ -120,8 +139,34 @@ async def analyze_song(file: UploadFile = File(...)):
                 detail="音訊分析失敗，請確認檔案是否為有效的音訊格式"
             )
 
-        # 生成 Prompt
-        result = app.state.translator.generate_prompt(raw_features)
+        # 2. CLAP 分析 (語義特徵) - 如果啟用
+        clap_result = None
+        clap_tags = []
+
+        if app.state.clap_analyzer:
+            try:
+                logger.info("Running CLAP analysis...")
+                clap_result = app.state.clap_analyzer.analyze(temp_path)
+
+                if clap_result:
+                    clap_tags = app.state.clap_analyzer.get_formatted_tags(clap_result)
+                    logger.info(f"CLAP tags: {clap_tags}")
+            except Exception as e:
+                logger.warning(f"CLAP analysis failed: {e}")
+                # CLAP 失敗不影響主要流程
+
+        # 3. 生成 Prompt (結合 Librosa + CLAP)
+        result = app.state.translator.generate_prompt(
+            features=raw_features,
+            clap_tags=clap_tags if clap_tags else None
+        )
+
+        # 加入 CLAP 詳細結果 (如果有)
+        if clap_result:
+            result["clap_analysis"] = {
+                "tags": clap_result.get("tags", [])[:10],
+                "top_by_category": clap_result.get("top_tags_by_category", {})
+            }
 
         logger.info(f"Analysis complete: BPM={result['bpm']}, Key={result['key']}")
 
@@ -152,7 +197,9 @@ async def health_check():
     """健康檢查端點 (供 Cloud Run / Load Balancer 使用)"""
     return {
         "status": "healthy",
-        "environment": ENVIRONMENT
+        "version": "2.0.0",
+        "environment": ENVIRONMENT,
+        "clap_enabled": CLAP_ENABLED
     }
 
 
