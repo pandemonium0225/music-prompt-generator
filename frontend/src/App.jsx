@@ -12,8 +12,8 @@ import {
   AlertCircle
 } from 'lucide-react';
 
-// API URL - 使用 proxy 或直接指向後端
-const API_URL = '/api';
+// API URL - 開發環境使用 proxy，生產環境使用環境變數
+const API_URL = import.meta.env.VITE_API_URL || '/api';
 
 function App() {
   const [file, setFile] = useState(null);
@@ -90,7 +90,7 @@ function App() {
       } else if (err.response) {
         setError(err.response.data.detail || '分析失敗');
       } else if (err.request) {
-        setError('無法連接到伺服器，請確認後端是否已啟動 (localhost:8000)');
+        setError('無法連接到伺服器，請稍後再試');
       } else {
         setError('發生未知錯誤');
       }
@@ -99,11 +99,34 @@ function App() {
     }
   };
 
-  const copyToClipboard = () => {
-    if (result) {
-      navigator.clipboard.writeText(result.prompt);
+  const copyToClipboard = async () => {
+    if (!result) return;
+
+    const text = result.prompt;
+
+    try {
+      // 嘗試使用現代 Clipboard API
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        // Fallback: 使用傳統方法 (支援非安全環境如 WSL IP)
+        const textArea = document.createElement('textarea');
+        textArea.value = text;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-9999px';
+        textArea.style.top = '-9999px';
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+      }
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.error('Copy failed:', err);
+      // 顯示手動複製提示
+      alert('自動複製失敗，請手動選取文字後按 Ctrl+C 複製');
     }
   };
 

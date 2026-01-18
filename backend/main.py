@@ -1,39 +1,71 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from analyzer import AudioAnalyzer
-from translator import SunoTranslator
-import shutil
+from contextlib import asynccontextmanager
 import os
+import tempfile
+import logging
+
+# 環境變數配置 (帶有預設值，確保向下相容)
+PORT = int(os.getenv("PORT", 8000))
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
+
+# 配置 logging
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """應用程式生命週期管理"""
+    # 啟動時
+    logger.info(f"Starting Music Prompt Generator API in {ENVIRONMENT} mode")
+    logger.info(f"CORS allowed origins: {ALLOWED_ORIGINS}")
+
+    # 延遲載入重量級模組 (librosa 載入較慢)
+    from analyzer import AudioAnalyzer
+    from translator import SunoTranslator
+
+    app.state.analyzer = AudioAnalyzer()
+    app.state.translator = SunoTranslator()
+
+    yield
+
+    # 關閉時
+    logger.info("Shutting down Music Prompt Generator API")
+
 
 app = FastAPI(
     title="Music Prompt Generator API",
     description="分析音訊檔案並生成 SUNO 風格的 Prompt",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan
 )
 
-# 允許跨域請求
+# CORS 配置 - 支援環境變數
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS if ALLOWED_ORIGINS != ["*"] else ["*"],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-analyzer = AudioAnalyzer()
-translator = SunoTranslator()
-
-# 確保暫存目錄存在
-TEMP_DIR = "temp"
-os.makedirs(TEMP_DIR, exist_ok=True)
 
 
 @app.get("/")
 async def root():
     return {
         "message": "Music Prompt Generator API",
+        "version": "1.0.0",
+        "environment": ENVIRONMENT,
         "docs": "/docs",
         "endpoints": {
-            "analyze": "POST /api/analyze - 上傳音訊檔案進行分析"
+            "analyze": "POST /api/analyze - 上傳音訊檔案進行分析",
+            "health": "GET /api/health - 健康檢查"
         }
     }
 
@@ -47,29 +79,40 @@ async def analyze_song(file: UploadFile = File(...)):
     建議檔案大小: < 10MB
     """
     # 驗證檔案類型
-    allowed_types = [
+    allowed_extensions = {'.mp3', '.wav', '.flac', '.ogg'}
+    allowed_mimetypes = {
         "audio/mpeg", "audio/mp3", "audio/wav", "audio/wave",
         "audio/x-wav", "audio/flac", "audio/ogg", "audio/x-flac"
-    ]
+    }
 
-    if file.content_type and file.content_type not in allowed_types:
-        # 有些瀏覽器可能不會正確設定 content_type，所以也檢查副檔名
-        ext = os.path.splitext(file.filename)[1].lower()
-        if ext not in ['.mp3', '.wav', '.flac', '.ogg']:
+    ext = os.path.splitext(file.filename)[1].lower() if file.filename else ""
+
+    if file.content_type and file.content_type not in allowed_mimetypes:
+        if ext not in allowed_extensions:
+            logger.warning(f"Rejected file with type: {file.content_type}, ext: {ext}")
             raise HTTPException(
                 status_code=400,
                 detail=f"不支援的檔案格式: {file.content_type or ext}"
             )
 
-    temp_path = os.path.join(TEMP_DIR, file.filename)
-
+    # 使用系統暫存目錄 (Cloud Run 相容)
+    temp_file = None
+    temp_path = None
     try:
-        # 儲存上傳的檔案
-        with open(temp_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+        # 建立暫存檔案
+        suffix = ext if ext else ".tmp"
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        temp_path = temp_file.name
+
+        # 寫入上傳的檔案內容
+        content = await file.read()
+        temp_file.write(content)
+        temp_file.close()
+
+        logger.info(f"Analyzing file: {file.filename} ({len(content)} bytes)")
 
         # 分析音訊
-        raw_features = analyzer.analyze(temp_path)
+        raw_features = app.state.analyzer.analyze(temp_path)
 
         if not raw_features:
             raise HTTPException(
@@ -78,7 +121,9 @@ async def analyze_song(file: UploadFile = File(...)):
             )
 
         # 生成 Prompt
-        result = translator.generate_prompt(raw_features)
+        result = app.state.translator.generate_prompt(raw_features)
+
+        logger.info(f"Analysis complete: BPM={result['bpm']}, Key={result['key']}")
 
         return {
             "success": True,
@@ -88,22 +133,34 @@ async def analyze_song(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Analysis error: {str(e)}", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail=f"伺服器錯誤: {str(e)}"
         )
     finally:
         # 清理暫存檔案
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except Exception as e:
+                logger.warning(f"Failed to delete temp file: {e}")
 
 
 @app.get("/api/health")
 async def health_check():
-    """健康檢查端點"""
-    return {"status": "healthy"}
+    """健康檢查端點 (供 Cloud Run / Load Balancer 使用)"""
+    return {
+        "status": "healthy",
+        "environment": ENVIRONMENT
+    }
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        "main:app",
+        host="0.0.0.0",
+        port=PORT,
+        reload=(ENVIRONMENT == "development")
+    )

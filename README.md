@@ -23,16 +23,26 @@ music-prompt-generator/
 │   ├── analyzer.py          # 音訊分析 (Librosa)
 │   ├── translator.py        # 特徵轉 Prompt
 │   ├── pyproject.toml       # Python 依賴 (uv)
-│   └── temp/                # 暫存目錄
+│   ├── Dockerfile           # Docker 映像配置
+│   ├── .dockerignore
+│   └── .env.example         # 環境變數範本
 ├── frontend/                 # React + Vite 前端
 │   ├── src/
 │   │   ├── App.jsx          # 主要介面
 │   │   ├── main.jsx         # 入口點
 │   │   └── index.css        # 樣式
 │   ├── package.json
-│   └── vite.config.js
+│   ├── vite.config.js
+│   ├── Dockerfile           # Docker 映像配置
+│   ├── nginx.conf           # Nginx 配置
+│   ├── .dockerignore
+│   └── .env.example         # 環境變數範本
+├── docker-compose.yml        # 本地 Docker 測試
+├── cloudbuild.yaml           # GCP Cloud Build 配置
 └── README.md
 ```
+
+---
 
 ## 快速開始
 
@@ -41,46 +51,160 @@ music-prompt-generator/
 - Python 3.10+
 - [uv](https://docs.astral.sh/uv/) - Python 套件管理器
 - Node.js 18+
-- npm 或 yarn
+- npm
 
-### 1. 啟動後端 (Python + uv)
+### 方式一：本地開發 (推薦)
 
-```bash
-cd backend
-
-# 安裝依賴並啟動伺服器
-uv run python main.py
-```
-
-或者分步執行：
+**1. 啟動後端**
 
 ```bash
 cd backend
-
-# 同步依賴
-uv sync
-
-# 啟動伺服器
 uv run python main.py
 ```
 
 後端將在 http://localhost:8000 運行
 
-### 2. 啟動前端 (React)
+**2. 啟動前端**
 
 ```bash
 cd frontend
-
-# 安裝依賴
 npm install
-
-# 啟動開發伺服器
 npm run dev
 ```
 
 前端將在 http://localhost:5173 運行
 
+### 方式二：Docker Compose
+
+```bash
+# 建構並啟動所有服務
+docker compose up --build
+
+# 背景執行
+docker compose up -d --build
+
+# 查看日誌
+docker compose logs -f
+
+# 停止服務
+docker compose down
+```
+
+- 前端: http://localhost:3000
+- 後端: http://localhost:8000
+
+---
+
+## 環境變數
+
+### Backend
+
+| 變數 | 預設值 | 說明 |
+|------|--------|------|
+| `PORT` | `8000` | 伺服器端口 |
+| `ENVIRONMENT` | `development` | 執行環境 (development/production) |
+| `LOG_LEVEL` | `INFO` | 日誌等級 (DEBUG/INFO/WARNING/ERROR) |
+| `ALLOWED_ORIGINS` | `*` | CORS 允許的來源 (逗號分隔) |
+
+### Frontend
+
+| 變數 | 預設值 | 說明 |
+|------|--------|------|
+| `VITE_API_URL` | `/api` | API 伺服器網址 |
+
+---
+
+## GCP 部署指南
+
+### 前置條件
+
+1. 安裝 [Google Cloud SDK](https://cloud.google.com/sdk/docs/install)
+2. 建立 GCP 專案並啟用以下 API：
+   - Cloud Run API
+   - Cloud Build API
+   - Container Registry API
+
+```bash
+# 登入 GCP
+gcloud auth login
+
+# 設定專案
+gcloud config set project YOUR_PROJECT_ID
+
+# 啟用 API
+gcloud services enable run.googleapis.com cloudbuild.googleapis.com containerregistry.googleapis.com
+```
+
+### 部署方式
+
+#### 方式一：使用 Cloud Build (CI/CD)
+
+```bash
+# 從專案根目錄執行
+gcloud builds submit --config cloudbuild.yaml
+```
+
+這會自動：
+1. 建構 Backend 和 Frontend Docker 映像
+2. 推送到 Container Registry
+3. 部署到 Cloud Run
+
+#### 方式二：手動部署
+
+**部署 Backend:**
+
+```bash
+cd backend
+
+# 建構映像
+gcloud builds submit --tag gcr.io/YOUR_PROJECT_ID/music-prompt-backend
+
+# 部署到 Cloud Run
+gcloud run deploy music-prompt-backend \
+  --image gcr.io/YOUR_PROJECT_ID/music-prompt-backend \
+  --region asia-east1 \
+  --platform managed \
+  --allow-unauthenticated \
+  --memory 1Gi \
+  --set-env-vars "ENVIRONMENT=production,LOG_LEVEL=INFO"
+```
+
+**部署 Frontend:**
+
+```bash
+cd frontend
+
+# 建構映像 (替換 BACKEND_URL 為實際的後端網址)
+gcloud builds submit \
+  --tag gcr.io/YOUR_PROJECT_ID/music-prompt-frontend \
+  --build-arg VITE_API_URL=https://YOUR_BACKEND_URL/api
+
+# 部署到 Cloud Run
+gcloud run deploy music-prompt-frontend \
+  --image gcr.io/YOUR_PROJECT_ID/music-prompt-frontend \
+  --region asia-east1 \
+  --platform managed \
+  --allow-unauthenticated \
+  --memory 256Mi
+```
+
+### 部署後設定
+
+部署完成後，需要更新 Backend 的 CORS 設定：
+
+```bash
+gcloud run services update music-prompt-backend \
+  --region asia-east1 \
+  --set-env-vars "ALLOWED_ORIGINS=https://YOUR_FRONTEND_URL"
+```
+
+---
+
 ## API 端點
+
+### GET /
+
+API 資訊
 
 ### POST /api/analyze
 
@@ -111,12 +235,19 @@ npm run dev
 }
 ```
 
+### GET /api/health
+
+健康檢查端點
+
+---
+
 ## 技術棧
 
 ### 後端
 - FastAPI - Web 框架
 - Librosa - 音訊分析
 - NumPy / SciPy - 數學運算
+- Gunicorn + Uvicorn - 生產環境伺服器
 
 ### 前端
 - React 18
@@ -124,6 +255,14 @@ npm run dev
 - Tailwind CSS - 樣式
 - Axios - HTTP 請求
 - Lucide React - 圖示
+
+### 部署
+- Docker - 容器化
+- Nginx - 靜態檔案伺服器
+- GCP Cloud Run - Serverless 容器平台
+- GCP Cloud Build - CI/CD
+
+---
 
 ## 授權
 

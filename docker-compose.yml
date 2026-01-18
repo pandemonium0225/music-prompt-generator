@@ -1,0 +1,73 @@
+# =============================================================================
+# Music Prompt Generator - Docker Compose
+# =============================================================================
+# 本地 Docker 測試環境
+# 使用方式: docker compose up --build
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # Backend API Service
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: music-prompt-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - PORT=8000
+      - ENVIRONMENT=development
+      - LOG_LEVEL=INFO
+      - ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # Frontend Web Service
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=http://localhost:8000/api
+    container_name: music-prompt-frontend
+    ports:
+      - "3000:8080"
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+# =============================================================================
+# 使用說明
+# =============================================================================
+# 啟動所有服務:
+#   docker compose up --build
+#
+# 背景執行:
+#   docker compose up -d --build
+#
+# 查看日誌:
+#   docker compose logs -f
+#
+# 停止服務:
+#   docker compose down
+#
+# 重新建構特定服務:
+#   docker compose build backend
+#   docker compose build frontend
+# =============================================================================

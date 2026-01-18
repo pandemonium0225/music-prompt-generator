@@ -1,0 +1,138 @@
+# =============================================================================
+# Music Prompt Generator - Cloud Build 配置
+# =============================================================================
+# GCP Cloud Build CI/CD 設定
+# 觸發方式: gcloud builds submit --config cloudbuild.yaml
+# =============================================================================
+
+substitutions:
+  _REGION: asia-east1
+  _BACKEND_SERVICE: music-prompt-backend
+  _FRONTEND_SERVICE: music-prompt-frontend
+  _BACKEND_IMAGE: gcr.io/${PROJECT_ID}/${_BACKEND_SERVICE}
+  _FRONTEND_IMAGE: gcr.io/${PROJECT_ID}/${_FRONTEND_SERVICE}
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Step 1: 建構 Backend Docker 映像
+  # ---------------------------------------------------------------------------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-backend'
+    args:
+      - 'build'
+      - '-t'
+      - '${_BACKEND_IMAGE}:${SHORT_SHA}'
+      - '-t'
+      - '${_BACKEND_IMAGE}:latest'
+      - '-f'
+      - 'backend/Dockerfile'
+      - 'backend'
+
+  # ---------------------------------------------------------------------------
+  # Step 2: 建構 Frontend Docker 映像
+  # ---------------------------------------------------------------------------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'build-frontend'
+    args:
+      - 'build'
+      - '-t'
+      - '${_FRONTEND_IMAGE}:${SHORT_SHA}'
+      - '-t'
+      - '${_FRONTEND_IMAGE}:latest'
+      - '--build-arg'
+      - 'VITE_API_URL=https://${_BACKEND_SERVICE}-${PROJECT_NUMBER}.${_REGION}.run.app/api'
+      - '-f'
+      - 'frontend/Dockerfile'
+      - 'frontend'
+
+  # ---------------------------------------------------------------------------
+  # Step 3: 推送 Backend 映像到 Container Registry
+  # ---------------------------------------------------------------------------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-backend'
+    args:
+      - 'push'
+      - '--all-tags'
+      - '${_BACKEND_IMAGE}'
+    waitFor:
+      - 'build-backend'
+
+  # ---------------------------------------------------------------------------
+  # Step 4: 推送 Frontend 映像到 Container Registry
+  # ---------------------------------------------------------------------------
+  - name: 'gcr.io/cloud-builders/docker'
+    id: 'push-frontend'
+    args:
+      - 'push'
+      - '--all-tags'
+      - '${_FRONTEND_IMAGE}'
+    waitFor:
+      - 'build-frontend'
+
+  # ---------------------------------------------------------------------------
+  # Step 5: 部署 Backend 到 Cloud Run
+  # ---------------------------------------------------------------------------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-backend'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_BACKEND_SERVICE}'
+      - '--image'
+      - '${_BACKEND_IMAGE}:${SHORT_SHA}'
+      - '--region'
+      - '${_REGION}'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--memory'
+      - '1Gi'
+      - '--cpu'
+      - '1'
+      - '--timeout'
+      - '120'
+      - '--set-env-vars'
+      - 'ENVIRONMENT=production,LOG_LEVEL=INFO'
+    waitFor:
+      - 'push-backend'
+
+  # ---------------------------------------------------------------------------
+  # Step 6: 部署 Frontend 到 Cloud Run
+  # ---------------------------------------------------------------------------
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'deploy-frontend'
+    entrypoint: 'gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_FRONTEND_SERVICE}'
+      - '--image'
+      - '${_FRONTEND_IMAGE}:${SHORT_SHA}'
+      - '--region'
+      - '${_REGION}'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--memory'
+      - '256Mi'
+      - '--cpu'
+      - '1'
+    waitFor:
+      - 'push-frontend'
+      - 'deploy-backend'
+
+# 映像清單
+images:
+  - '${_BACKEND_IMAGE}:${SHORT_SHA}'
+  - '${_BACKEND_IMAGE}:latest'
+  - '${_FRONTEND_IMAGE}:${SHORT_SHA}'
+  - '${_FRONTEND_IMAGE}:latest'
+
+# 建構選項
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'
+
+# 建構超時時間 (20 分鐘)
+timeout: '1200s'
