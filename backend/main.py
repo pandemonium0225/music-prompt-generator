@@ -5,12 +5,17 @@ import os
 import tempfile
 import logging
 
+# 載入 .env 檔案
+from dotenv import load_dotenv
+load_dotenv()
+
 # 環境變數配置 (帶有預設值，確保向下相容)
 PORT = int(os.getenv("PORT", 8000))
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 ENVIRONMENT = os.getenv("ENVIRONMENT", "development")
 CLAP_ENABLED = os.getenv("CLAP_ENABLED", "true").lower() == "true"
+LLM_ENABLED = os.getenv("LLM_ENABLED", "true").lower() == "true"
 
 # 配置 logging
 logging.basicConfig(
@@ -27,6 +32,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"Starting Music Prompt Generator API v2.0 in {ENVIRONMENT} mode")
     logger.info(f"CORS allowed origins: {ALLOWED_ORIGINS}")
     logger.info(f"CLAP enabled: {CLAP_ENABLED}")
+    logger.info(f"LLM enabled: {LLM_ENABLED}")
 
     # 延遲載入重量級模組 (librosa 載入較慢)
     from analyzer import AudioAnalyzer
@@ -47,6 +53,20 @@ async def lifespan(app: FastAPI):
             logger.warning(f"Failed to initialize CLAP analyzer: {e}")
             logger.warning("Falling back to Librosa-only analysis")
 
+    # 載入 LLM Generator (如果啟用)
+    app.state.llm_generator = None
+    if LLM_ENABLED:
+        try:
+            from llm_generator import get_llm_generator
+            app.state.llm_generator = get_llm_generator()
+            if app.state.llm_generator:
+                logger.info("LLM generator initialized")
+            else:
+                logger.warning("LLM generator not available (check OPENAI_API_KEY)")
+        except Exception as e:
+            logger.warning(f"Failed to initialize LLM generator: {e}")
+            logger.warning("Falling back to tag-based prompts")
+
     yield
 
     # 關閉時
@@ -55,8 +75,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Music Prompt Generator API",
-    description="分析音訊檔案並生成 SUNO 風格的 Prompt (支援 CLAP)",
-    version="2.0.0",
+    description="分析音訊檔案並生成 SUNO 風格的自然語言 Prompt (支援 CLAP + GPT)",
+    version="2.1.0",
     lifespan=lifespan
 )
 
@@ -74,9 +94,10 @@ app.add_middleware(
 async def root():
     return {
         "message": "Music Prompt Generator API",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "environment": ENVIRONMENT,
         "clap_enabled": CLAP_ENABLED,
+        "llm_enabled": LLM_ENABLED,
         "docs": "/docs",
         "endpoints": {
             "analyze": "POST /api/analyze - 上傳音訊檔案進行分析",
@@ -139,33 +160,42 @@ async def analyze_song(file: UploadFile = File(...)):
                 detail="音訊分析失敗，請確認檔案是否為有效的音訊格式"
             )
 
-        # 2. CLAP 分析 (語義特徵) - 如果啟用
-        clap_result = None
-        clap_tags = []
+        # 2. 特徵正規化 (0-1 範圍)
+        normalized_features = app.state.analyzer.normalize_features(raw_features)
+        logger.debug(f"Normalized features: {normalized_features}")
+
+        # 3. CLAP 分析 (語義特徵) - 如果啟用
+        clap_raw_result = None
+        clap_formatted = None
 
         if app.state.clap_analyzer:
             try:
                 logger.info("Running CLAP analysis...")
-                clap_result = app.state.clap_analyzer.analyze(temp_path)
+                clap_raw_result = app.state.clap_analyzer.analyze(temp_path)
 
-                if clap_result:
-                    clap_tags = app.state.clap_analyzer.get_formatted_tags(clap_result)
-                    logger.info(f"CLAP tags: {clap_tags}")
+                if clap_raw_result:
+                    # 使用新的 get_formatted_tags() 返回結構化結果
+                    clap_formatted = app.state.clap_analyzer.get_formatted_tags(clap_raw_result)
+                    logger.info(f"CLAP tags by category: {clap_formatted.get('by_category', {})}")
             except Exception as e:
                 logger.warning(f"CLAP analysis failed: {e}")
                 # CLAP 失敗不影響主要流程
 
-        # 3. 生成 Prompt (結合 Librosa + CLAP)
+        # 4. 生成 Prompt (結合 Librosa + CLAP + LLM)
         result = app.state.translator.generate_prompt(
             features=raw_features,
-            clap_tags=clap_tags if clap_tags else None
+            clap_result=clap_formatted,
+            normalized_features=normalized_features,
+            use_llm=LLM_ENABLED,
+            llm_generator=app.state.llm_generator
         )
 
         # 加入 CLAP 詳細結果 (如果有)
-        if clap_result:
+        if clap_raw_result:
             result["clap_analysis"] = {
-                "tags": clap_result.get("tags", [])[:10],
-                "top_by_category": clap_result.get("top_tags_by_category", {})
+                "tags": clap_raw_result.get("tags", [])[:10],
+                "top_by_category": clap_raw_result.get("top_tags_by_category", {}),
+                "formatted": clap_formatted
             }
 
         logger.info(f"Analysis complete: BPM={result['bpm']}, Key={result['key']}")
@@ -197,9 +227,10 @@ async def health_check():
     """健康檢查端點 (供 Cloud Run / Load Balancer 使用)"""
     return {
         "status": "healthy",
-        "version": "2.0.0",
+        "version": "2.1.0",
         "environment": ENVIRONMENT,
-        "clap_enabled": CLAP_ENABLED
+        "clap_enabled": CLAP_ENABLED,
+        "llm_enabled": LLM_ENABLED
     }
 
 

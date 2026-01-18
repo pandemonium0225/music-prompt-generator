@@ -20,7 +20,7 @@ function App() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
-  const [copied, setCopied] = useState(false);
+  const [copiedItem, setCopiedItem] = useState(null); // 'main' | 'fallback' | null
   const [dragActive, setDragActive] = useState(false);
 
   // 處理拖放
@@ -99,10 +99,8 @@ function App() {
     }
   };
 
-  const copyToClipboard = async () => {
-    if (!result) return;
-
-    const text = result.prompt;
+  const copyToClipboard = async (text, itemId) => {
+    if (!text) return;
 
     try {
       // 嘗試使用現代 Clipboard API
@@ -121,8 +119,8 @@ function App() {
         document.execCommand('copy');
         document.body.removeChild(textArea);
       }
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+      setCopiedItem(itemId);
+      setTimeout(() => setCopiedItem(null), 2000);
     } catch (err) {
       console.error('Copy failed:', err);
       // 顯示手動複製提示
@@ -247,12 +245,17 @@ function App() {
                   <span className="text-amber-500 text-xs font-bold tracking-widest uppercase flex items-center gap-2">
                     <Music2 className="w-4 h-4" />
                     SUNO Style Prompt
+                    {result.prompt_source === 'llm' && (
+                      <span className="ml-2 px-2 py-0.5 bg-green-500/20 text-green-400 rounded text-xs">
+                        AI 生成
+                      </span>
+                    )}
                   </span>
                   <button
-                    onClick={copyToClipboard}
+                    onClick={() => copyToClipboard(result.prompt, 'main')}
                     className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm text-neutral-400 hover:text-white hover:bg-neutral-800 transition-all"
                   >
-                    {copied ? (
+                    {copiedItem === 'main' ? (
                       <>
                         <Check className="w-4 h-4 text-green-500" />
                         <span className="text-green-500">已複製</span>
@@ -267,10 +270,47 @@ function App() {
                 </div>
               </div>
 
-              <div className="p-6">
-                <p className="text-xl sm:text-2xl font-mono text-white leading-relaxed break-words select-all bg-neutral-950/50 p-4 rounded-lg border border-neutral-800">
-                  {result.prompt}
-                </p>
+              <div className="p-6 space-y-4">
+                {/* AI 潤飾過的 Prompt */}
+                <div>
+                  <h4 className="text-xs font-bold text-amber-500/80 uppercase tracking-wider mb-2 flex items-center gap-2">
+                    <Sparkles className="w-3 h-3" />
+                    {result.prompt_source === 'llm' ? 'AI 自然語言描述' : '生成結果'}
+                  </h4>
+                  <p className="text-lg sm:text-xl font-mono text-white leading-relaxed break-words select-all bg-neutral-950/50 p-4 rounded-lg border border-neutral-800">
+                    {result.prompt}
+                  </p>
+                </div>
+
+                {/* 原始標籤組合 (如果與 prompt 不同才顯示) */}
+                {result.prompt_fallback && result.prompt !== result.prompt_fallback && (
+                  <div>
+                    <div className="flex justify-between items-center mb-2">
+                      <h4 className="text-xs font-bold text-neutral-500 uppercase tracking-wider">
+                        原始標籤組合
+                      </h4>
+                      <button
+                        onClick={() => copyToClipboard(result.prompt_fallback, 'fallback')}
+                        className="flex items-center gap-1.5 px-2 py-1 rounded text-xs text-neutral-500 hover:text-white hover:bg-neutral-800 transition-all"
+                      >
+                        {copiedItem === 'fallback' ? (
+                          <>
+                            <Check className="w-3 h-3 text-green-500" />
+                            <span className="text-green-500">已複製</span>
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="w-3 h-3" />
+                            複製
+                          </>
+                        )}
+                      </button>
+                    </div>
+                    <p className="text-sm font-mono text-neutral-400 leading-relaxed break-words select-all bg-neutral-950/30 p-3 rounded-lg border border-neutral-800/50">
+                      {result.prompt_fallback}
+                    </p>
+                  </div>
+                )}
 
                 {/* 特徵數據 */}
                 <div className="mt-6 pt-6 border-t border-neutral-800">
@@ -330,7 +370,7 @@ function App() {
 
       {/* Footer */}
       <footer className="mt-12 text-center text-neutral-600 text-sm">
-        <p>Music Prompt Generator v1.0</p>
+        <p>Music Prompt Generator v2.1</p>
       </footer>
     </div>
   );

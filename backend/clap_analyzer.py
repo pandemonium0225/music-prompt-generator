@@ -23,6 +23,21 @@ CLAP_ENABLED = os.getenv("CLAP_ENABLED", "true").lower() == "true"
 CLAP_MODEL_NAME = os.getenv("CLAP_MODEL", "laion/larger_clap_music")
 CLAP_TOP_K = int(os.getenv("CLAP_TOP_K", "8"))
 
+# 類別配置：權重、最大數量、閾值
+CATEGORY_CONFIG = {
+    "genre": {"weight": 1.0, "max": 2, "threshold": 0.008},
+    "mood": {"weight": 0.9, "max": 2, "threshold": 0.007},
+    "instruments": {"weight": 1.1, "max": 2, "threshold": 0.008},
+    "vocals": {"weight": 0.8, "max": 1, "threshold": 0.008},
+    "production": {"weight": 0.7, "max": 1, "threshold": 0.007},
+    "rhythm": {"weight": 0.9, "max": 1, "threshold": 0.008},
+    "era": {"weight": 0.5, "max": 1, "threshold": 0.009},
+    "atmosphere": {"weight": 0.6, "max": 1, "threshold": 0.007},
+}
+
+# CLAP 信心度閾值：當最高分低於此值時，認為 CLAP 結果不可靠
+CLAP_CONFIDENCE_THRESHOLD = float(os.getenv("CLAP_CONFIDENCE_THRESHOLD", "0.015"))
+
 
 class CLAPAnalyzer:
     """
@@ -258,47 +273,142 @@ class CLAPAnalyzer:
             logger.error(f"CLAP analysis error: {e}", exc_info=True)
             return None
 
-    def get_formatted_tags(self, analysis_result: dict, max_tags: int = 6) -> list:
+    def get_formatted_tags(self, analysis_result: dict, max_tags: int = 10) -> dict:
         """
-        從分析結果中提取格式化的標籤列表
+        從分析結果中提取格式化的標籤列表（按類別組織）
 
-        優先從不同類別中各選一個，確保多樣性
+        使用 CATEGORY_CONFIG 的權重和閾值進行選取:
+        - 每個類別有獨立的閾值（基於實際 CLAP 分數範圍 0.01-0.03）
+        - 按加權分數排序選取
+        - 每個類別最多選取 max 個標籤
+        - 當最高分低於 CLAP_CONFIDENCE_THRESHOLD 時，返回空結果（不可靠）
+
+        Returns:
+            dict: {
+                "by_category": {"genre": [...], "mood": [...], ...},
+                "all_tags": [...],
+                "weighted_scores": {...},
+                "confidence": float,  # 最高分數
+                "is_reliable": bool   # 是否可靠
+            }
         """
+        empty_result = {
+            "by_category": {},
+            "all_tags": [],
+            "weighted_scores": {},
+            "confidence": 0.0,
+            "is_reliable": False
+        }
+
         if not analysis_result:
-            return []
+            return empty_result
 
-        selected = []
-        used_categories = set()
+        # 檢查 CLAP 信心度
+        all_scores = analysis_result.get("scores", {})
+        if not all_scores:
+            return empty_result
 
-        # 優先類別順序
-        priority_categories = ["genre", "mood", "instruments", "vocals", "production", "era"]
+        max_score = max(all_scores.values()) if all_scores else 0.0
+        is_reliable = max_score >= CLAP_CONFIDENCE_THRESHOLD
 
-        # 先從每個優先類別取一個
-        for category in priority_categories:
-            if len(selected) >= max_tags:
-                break
-            if category in analysis_result.get("top_tags_by_category", {}):
-                tag_info = analysis_result["top_tags_by_category"][category]
-                if tag_info["score"] > 0.1:  # 只取有足夠信心的標籤
-                    # 簡化標籤 (移除 " music" 等後綴)
-                    tag = tag_info["tag"]
-                    tag = tag.replace(" music", "").replace(" style", "")
-                    if tag not in selected:
-                        selected.append(tag)
-                        used_categories.add(category)
+        if not is_reliable:
+            logger.info(
+                f"CLAP confidence too low ({max_score:.4f} < {CLAP_CONFIDENCE_THRESHOLD}), "
+                "ignoring CLAP results"
+            )
+            return {
+                "by_category": {},
+                "all_tags": [],
+                "weighted_scores": {},
+                "confidence": max_score,
+                "is_reliable": False
+            }
 
-        # 如果還有空間，從 top tags 補充
-        for tag in analysis_result.get("tags", []):
-            if len(selected) >= max_tags:
-                break
-            category = analysis_result["categories"].get(tag, "")
-            if category not in used_categories:
-                tag_clean = tag.replace(" music", "").replace(" style", "")
-                if tag_clean not in selected:
-                    selected.append(tag_clean)
-                    used_categories.add(category)
+        # 收集每個類別的候選標籤
+        category_candidates = {cat: [] for cat in CATEGORY_CONFIG.keys()}
 
-        return selected
+        # 從所有標籤中收集
+        all_scores = analysis_result.get("scores", {})
+        all_categories = analysis_result.get("categories", {})
+
+        for tag, score in all_scores.items():
+            category = all_categories.get(tag, "")
+            if category in CATEGORY_CONFIG:
+                config = CATEGORY_CONFIG[category]
+                # 計算加權分數
+                weighted_score = score * config["weight"]
+                category_candidates[category].append({
+                    "tag": tag,
+                    "score": score,
+                    "weighted_score": weighted_score
+                })
+
+        # 補充 top_tags_by_category 中的標籤（可能不在 top-k 中）
+        for category, tag_info in analysis_result.get("top_tags_by_category", {}).items():
+            if category in CATEGORY_CONFIG:
+                tag = tag_info["tag"]
+                score = tag_info["score"]
+                # 檢查是否已存在
+                existing_tags = [c["tag"] for c in category_candidates[category]]
+                if tag not in existing_tags:
+                    config = CATEGORY_CONFIG[category]
+                    weighted_score = score * config["weight"]
+                    category_candidates[category].append({
+                        "tag": tag,
+                        "score": score,
+                        "weighted_score": weighted_score
+                    })
+
+        # 按類別選取標籤
+        by_category = {}
+        all_tags = []
+        weighted_scores = {}
+
+        for category, config in CATEGORY_CONFIG.items():
+            candidates = category_candidates.get(category, [])
+            if not candidates:
+                continue
+
+            # 按加權分數排序
+            candidates.sort(key=lambda x: x["weighted_score"], reverse=True)
+
+            # 選取達到閾值的標籤
+            selected = []
+            for c in candidates:
+                if len(selected) >= config["max"]:
+                    break
+                if c["score"] >= config["threshold"]:
+                    # 清理標籤
+                    clean_tag = self._clean_tag(c["tag"])
+                    if clean_tag and clean_tag not in selected:
+                        selected.append(clean_tag)
+                        weighted_scores[clean_tag] = round(c["weighted_score"], 4)
+
+            if selected:
+                by_category[category] = selected
+                all_tags.extend(selected)
+
+        return {
+            "by_category": by_category,
+            "all_tags": all_tags[:max_tags],
+            "weighted_scores": weighted_scores,
+            "confidence": max_score,
+            "is_reliable": True
+        }
+
+    def _clean_tag(self, tag: str) -> str:
+        """清理標籤，移除冗餘後綴"""
+        if not tag:
+            return ""
+
+        # 移除常見後綴
+        suffixes = [" music", " style", " recording", " production"]
+        result = tag
+        for suffix in suffixes:
+            if result.endswith(suffix):
+                result = result[:-len(suffix)]
+
+        return result.strip()
 
 
 # 單例模式 (避免重複載入模型)

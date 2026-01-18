@@ -111,3 +111,39 @@ class AudioAnalyzer:
         except Exception as e:
             logger.error(f"Analysis error: {e}", exc_info=True)
             return None
+
+    def normalize_features(self, raw_features: dict) -> dict:
+        """
+        將原始特徵正規化到 0-1 範圍，便於多特徵組合分析
+
+        Args:
+            raw_features: analyze() 返回的原始特徵字典
+
+        Returns:
+            dict: 正規化後的特徵（包含原始 bpm, key, mode）
+
+        正規化基準:
+            - energy: 0.15 = 高能量基準
+            - brightness: 1000-4000 Hz 範圍
+            - rhythm: 1.5 = 高節奏基準
+            - contrast: 30 = 高對比基準
+            - percussiveness: 0.15 = 高打擊感基準
+        """
+        # 取得 brightness 並限制在合理範圍
+        brightness = raw_features.get("brightness", 2000)
+        norm_brightness = max(0, min((brightness - 1000) / 3000, 1.0))
+
+        return {
+            # 保持原值
+            "bpm": raw_features.get("bpm", 120),
+            "key": raw_features.get("key", "C"),
+            "mode": raw_features.get("mode", "major"),
+            # 正規化到 0-1
+            "energy": min(raw_features.get("energy", 0) / 0.15, 1.0),
+            "brightness": norm_brightness,
+            "rhythm": min(raw_features.get("rhythm", 0) / 1.5, 1.0),
+            "contrast": min(raw_features.get("contrast", 0) / 30, 1.0),
+            "percussiveness": min(raw_features.get("percussiveness", 0) / 0.15, 1.0),
+            # 保留 energy_variation
+            "energy_variation": raw_features.get("energy_variation", 0),
+        }
