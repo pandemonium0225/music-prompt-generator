@@ -1,0 +1,17 @@
+[project]
+name = "music-prompt-generator"
+version = "1.0.0"
+description = "音訊分析工具，生成 SUNO AI 風格提示詞"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn>=0.27.0",
+    "python-multipart>=0.0.6",
+    "librosa>=0.10.1",
+    "numpy>=1.26.0",
+    "scipy>=1.11.0",
+]
+
+[dependency-groups]
+dev = []
